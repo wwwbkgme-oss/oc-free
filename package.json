@@ -1,0 +1,43 @@
+{
+  "name": "oc-free",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "OpenCode plugin — free AI providers with model filtering, toggles, telemetry, and discovery",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "free-models",
+    "free-llm",
+    "kilo",
+    "openrouter",
+    "llm7",
+    "qwen",
+    "cline"
+  ],
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.3.17"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "zod": "^4.0.0"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  }
+}
