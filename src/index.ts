@@ -339,7 +339,7 @@ const ocFree = async () => {
         template: 'Call the free_models tool to discover free AI models',
         description: 'List all available free models across providers',
       };
-      cmds['free'] = {
+      cmds['free-probe'] = {
         template: 'Test all free providers — checks API keys, endpoint connectivity, and reports live status',
         description: 'Health check for all free AI providers: tests keys, endpoints, and reports which are ready to use',
       };
@@ -407,7 +407,7 @@ const ocFree = async () => {
           }
 
           lines.push('---');
-          lines.push('Commands: `/free` (health check)  |  `/toggle-free`  |  `/free-status`');
+          lines.push('Commands: `/free-probe` (health check)  |  `/toggle-free`  |  `/free-status`');
           lines.push(`Free-only mode: ${isFreeOnly() ? 'ON' : 'OFF'}`);
 
           return { output: lines.join('\n') };
@@ -423,9 +423,9 @@ const ocFree = async () => {
       const cmd = input.command;
 
       // ═══════════════════════════════════════════════════════════════════
-      // /free   —  Health check: test all providers in real time
+      // /free-probe   —  Health check: test all providers in real time
       // ═══════════════════════════════════════════════════════════════════
-      if (cmd === 'free') {
+      if (cmd === 'free-probe') {
         const lines = [
           '🔍 **oc-free Health Check**',
           'Probing every provider… (4 s timeout each)',
@@ -487,7 +487,7 @@ const ocFree = async () => {
           lines.push(`- Toggle: \`/toggle-${pv.id}\``, '');
         }
         lines.push(`**Free-only mode: ${isFreeOnly() ? 'ON' : 'OFF'}**`);
-        lines.push('Run `/free` for a live health check, `/free-status` for counts');
+        lines.push('Run `/free-probe` for a live health check, `/free-status` for counts');
         output.parts = [textPart(lines.join('\n'))];
         return;
       }
@@ -515,7 +515,7 @@ const ocFree = async () => {
           lines.push(`- **${pv.id}**: ${freeCount} free + ${paidCount} paid = ${visible} visible`);
         }
         lines.push('', `Free-only: ${isFreeOnly() ? 'ON' : 'OFF'}`);
-        lines.push('', 'Run `/free` for a live connectivity health check');
+        lines.push('', 'Run `/free-probe` for a live connectivity health check');
         output.parts = [textPart(lines.join('\n'))];
         return;
       }
