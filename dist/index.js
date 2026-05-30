@@ -6,6 +6,64 @@ var z = tool.schema;
 var HOME = process.env.HOME || process.env.USERPROFILE || "";
 var OC_FREE_DIR = join(HOME, ".config", "oc-free");
 var CONFIG_PATH = join(OC_FREE_DIR, "config.json");
+function configureKilo(providers) {
+  if (providers.kilo)
+    return;
+  const models = FREE_PROVIDERS.find((x) => x.id === "kilo").free.map((m) => [
+    m.split("/")[1],
+    { name: m.split("/")[1] }
+  ]);
+  providers.kilo = {
+    baseUrl: "https://api.kilo.ai/api/gateway",
+    models: Object.fromEntries(models)
+  };
+}
+function configureLlm7(providers) {
+  if (providers.llm7)
+    return;
+  providers.llm7 = {
+    baseUrl: "https://api.llm7.io/v1",
+    models: {
+      default: { name: "LLM7 Default" },
+      fast: { name: "LLM7 Fast" }
+    }
+  };
+}
+function configureCline(providers) {
+  if (providers.cline)
+    return;
+  providers.cline = {
+    baseUrl: "https://api.cline.bot/api/v1",
+    models: {
+      "claude-sonnet-4": { name: "Claude Sonnet 4" },
+      "claude-haiku-3.5": { name: "Claude Haiku 3.5" }
+    }
+  };
+}
+function configureQwen(providers) {
+  if (providers.qwen)
+    return;
+  providers.qwen = {
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    apiKey: "oc-free-qwen",
+    models: {
+      "qwen3-coder-32b": { name: "Qwen3 Coder 32B" },
+      "qwen3-plus": { name: "Qwen3 Plus" }
+    }
+  };
+}
+function configureOpenrouter(providers) {
+  if (providers.openrouter)
+    return;
+  const models = FREE_PROVIDERS.find((x) => x.id === "openrouter").free.map((m) => {
+    const key = m.replace(/^openrouter\//, "");
+    return [key, { name: key }];
+  });
+  providers.openrouter = {
+    baseUrl: "https://openrouter.ai/api/v1",
+    models: Object.fromEntries(models)
+  };
+}
 var FREE_PROVIDERS = [
   {
     id: "opencode",
@@ -36,7 +94,8 @@ var FREE_PROVIDERS = [
     all: [],
     note: "Set OPENROUTER_API_KEY env var",
     envKey: "OPENROUTER_API_KEY",
-    docs: "https://openrouter.ai/keys"
+    docs: "https://openrouter.ai/keys",
+    configEntry: configureOpenrouter
   },
   {
     id: "kilo",
@@ -50,7 +109,8 @@ var FREE_PROVIDERS = [
     ],
     all: [],
     note: "Free OAuth, no credit card",
-    docs: "https://kilo.chat"
+    docs: "https://kilo.chat",
+    configEntry: configureKilo
   },
   {
     id: "llm7",
@@ -58,21 +118,24 @@ var FREE_PROVIDERS = [
     all: [],
     note: "100 req/hr free tier",
     envKey: "LLM7_API_KEY",
-    docs: "https://token.llm7.io"
+    docs: "https://token.llm7.io",
+    configEntry: configureLlm7
   },
   {
     id: "cline",
     free: ["cline/claude-sonnet-4", "cline/claude-haiku-3.5"],
     all: [],
     note: "Free account, no credit card",
-    docs: "https://cline.bot"
+    docs: "https://cline.bot",
+    configEntry: configureCline
   },
   {
     id: "qwen",
     free: ["qwen/qwen3-coder-32b", "qwen/qwen3-plus"],
     all: [],
     note: "1000 free req/day via OAuth",
-    docs: "https://chat.qwen.ai"
+    docs: "https://chat.qwen.ai",
+    configEntry: configureQwen
   }
 ];
 function loadConfig() {
@@ -91,63 +154,61 @@ function saveConfig(updates) {
     writeFileSync(CONFIG_PATH, JSON.stringify({ ...existing, ...updates }, null, 2), "utf8");
   } catch {}
 }
+function isFreeOnly() {
+  return loadConfig().free_only ?? true;
+}
 function getShowPaid(id) {
   const cfg = loadConfig();
-  const key = `${id}_show_paid`;
-  return !!cfg[key];
+  return !!cfg[`${id}_show_paid`];
+}
+function visibleModels(pv) {
+  const cfg = loadConfig();
+  const hidden = new Set(cfg.hidden_models ?? []);
+  const showPaid = getShowPaid(pv.id);
+  const pool = isFreeOnly() || !showPaid ? pv.free : [...pv.free, ...pv.all];
+  return pool.filter((m) => !hidden.has(m));
+}
+function textPart(text) {
+  return { type: "text", text };
 }
 var ocFree = async () => {
-  const freeOnly = { current: loadConfig().free_only ?? true };
   return {
     name: "oc-free",
     config: async (opencodeConfig) => {
-      const p = opencodeConfig.provider ??= {};
-      if (!p.kilo) {
-        p.kilo = {
-          baseUrl: "https://api.kilo.ai/api/gateway",
-          models: Object.fromEntries(FREE_PROVIDERS.find((x) => x.id === "kilo").free.map((m) => {
-            const id = m.split("/")[1];
-            return [id, { name: id }];
-          }))
-        };
+      const providers = opencodeConfig.provider ??= {};
+      for (const pv of FREE_PROVIDERS) {
+        pv.configEntry?.(providers);
       }
-      if (!p.llm7) {
-        p.llm7 = {
-          baseUrl: "https://api.llm7.io/v1",
-          models: { default: { name: "LLM7 Default" }, fast: { name: "LLM7 Fast" } }
-        };
-      }
-      if (!p.cline) {
-        p.cline = {
-          baseUrl: "https://api.cline.bot/api/v1",
-          models: { "claude-sonnet-4": { name: "Claude Sonnet 4" }, "claude-haiku-3.5": { name: "Claude Haiku 3.5" } }
-        };
-      }
-      if (!p.qwen) {
-        p.qwen = {
-          baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-          apiKey: "oc-free-qwen",
-          models: { "qwen3-coder-32b": { name: "Qwen3 Coder 32B" }, "qwen3-plus": { name: "Qwen3 Plus" } }
-        };
-      }
-      opencodeConfig.command ??= {};
-      opencodeConfig.command["free-models"] = {
+      const cmds = opencodeConfig.command ??= {};
+      cmds["free-models"] = {
         template: "Call the free_models tool to discover free AI models",
         description: "List all available free models across providers"
       };
-      opencodeConfig.command["toggle-free"] = {
+      cmds["toggle-free"] = {
         template: "Toggle free-only mode for all providers",
         description: "Switch between free-only and all models view"
       };
       for (const pv of FREE_PROVIDERS) {
-        opencodeConfig.command[`toggle-${pv.id}`] = {
+        cmds[`toggle-${pv.id}`] = {
           template: `Toggle free/paid models for ${pv.id}`,
           description: `Switch between free-only and all models for ${pv.id}`
         };
       }
-      opencodeConfig.command["free-status"] = {
+      cmds["free-status"] = {
         template: "Show free model counts for all providers",
         description: "Show how many free/paid models each provider has"
+      };
+      cmds["free-hide"] = {
+        template: "<model-id> — Hide a model from listings",
+        description: "Hide a specific model ID so it no longer appears in free-models output"
+      };
+      cmds["free-unhide"] = {
+        template: "<model-id> — Unhide a previously hidden model",
+        description: "Restore a hidden model ID back into listings"
+      };
+      cmds["free-hidden"] = {
+        template: "List all currently hidden model IDs",
+        description: "Show every model that has been hidden via /free-hide"
       };
     },
     tool: {
@@ -159,33 +220,28 @@ var ocFree = async () => {
         async execute(args) {
           const filter = args.provider?.toLowerCase();
           const lines = [];
-          const cfg = loadConfig();
-          const hidden = new Set(cfg.hidden_models ?? []);
           for (const pv of FREE_PROVIDERS) {
             if (filter && !pv.id.includes(filter))
               continue;
             const hasKey = pv.envKey ? !!process.env[pv.envKey] : true;
-            const showPaid = getShowPaid(pv.id);
-            const freeList = pv.free.filter((m) => !hidden.has(m));
-            const allList = [...pv.free, ...pv.all].filter((m) => !hidden.has(m));
+            const visible = visibleModels(pv);
             lines.push(`## ${pv.id} (${pv.note})`);
             if (pv.docs)
               lines.push(`Docs: ${pv.docs}`);
-            if (pv.envKey)
+            if (pv.envKey) {
               lines.push(`Auth: \`${pv.envKey}\` ${hasKey ? "✅ set" : "❌ not set"}`);
-            const display = freeOnly.current || !showPaid ? freeList : allList;
-            lines.push(`Models (${display.length} visible):`);
-            for (const m of display) {
-              lines.push(`  - \`${m}\``);
             }
-            if (pv.all.length > 0 && (freeOnly.current || !showPaid)) {
+            lines.push(`Models (${visible.length} visible):`);
+            for (const m of visible)
+              lines.push(`  - \`${m}\``);
+            if (pv.all.length > 0 && isFreeOnly()) {
               lines.push(`  *${pv.all.length} paid models hidden (toggle with /toggle-${pv.id})*`);
             }
             lines.push("");
           }
           lines.push("---");
-          lines.push("Commands: `/toggle-free` | `/toggle-{provider}` | `/free-status`");
-          lines.push(`Free-only mode: ${freeOnly.current ? "ON" : "OFF"}`);
+          lines.push("Commands: `/toggle-free` | `/toggle-{provider}` | `/free-status` | `/free-hide <id>`");
+          lines.push(`Free-only mode: ${isFreeOnly() ? "ON" : "OFF"}`);
           return { output: lines.join(`
 `) };
         }
@@ -194,33 +250,29 @@ var ocFree = async () => {
     "command.execute.before": async (input, output) => {
       const cmd = input.command;
       if (cmd === "free-models") {
-        const cfg = loadConfig();
-        const hidden = new Set(cfg.hidden_models ?? []);
         const lines = ["# Free Providers Overview", ""];
         for (const pv of FREE_PROVIDERS) {
           const hasKey = pv.envKey ? !!process.env[pv.envKey] : true;
-          const showPaid = getShowPaid(pv.id);
-          const visible = freeOnly.current || !showPaid ? pv.free : [...pv.free, ...pv.all];
-          const filtered = visible.filter((m) => !hidden.has(m));
+          const visible = visibleModels(pv);
           lines.push(`## ${pv.id}`);
           lines.push(`- ${pv.note}`);
           if (pv.envKey)
             lines.push(`- Auth: \`${pv.envKey}\` ${hasKey ? "✅" : "❌"}`);
-          lines.push(`- Models: ${filtered.length} visible`);
-          for (const m of filtered)
+          lines.push(`- Models: ${visible.length} visible`);
+          for (const m of visible)
             lines.push(`  - \`${m}\``);
           lines.push(`- Toggle: \`/toggle-${pv.id}\``, "");
         }
-        lines.push(`**Free-only mode: ${freeOnly.current ? "ON" : "OFF"}**`);
+        lines.push(`**Free-only mode: ${isFreeOnly() ? "ON" : "OFF"}**`);
         lines.push("Use `/toggle-free` to switch, `/free-status` for counts");
-        output.parts = [{ type: "text", text: lines.join(`
-`) }];
+        output.parts = [textPart(lines.join(`
+`))];
         return;
       }
       if (cmd === "toggle-free") {
-        freeOnly.current = !freeOnly.current;
-        saveConfig({ free_only: freeOnly.current });
-        output.parts = [{ type: "text", text: `Free-only mode: ${freeOnly.current ? "ON" : "OFF"}` }];
+        const next = !isFreeOnly();
+        saveConfig({ free_only: next });
+        output.parts = [textPart(`Free-only mode: ${next ? "ON" : "OFF"}`)];
         return;
       }
       if (cmd === "free-status") {
@@ -229,12 +281,54 @@ var ocFree = async () => {
           const showPaid = getShowPaid(pv.id);
           const freeCount = pv.free.length;
           const paidCount = pv.all.length;
-          const visible = freeOnly.current || !showPaid ? freeCount : freeCount + paidCount;
+          const visible = isFreeOnly() || !showPaid ? freeCount : freeCount + paidCount;
           lines.push(`- **${pv.id}**: ${freeCount} free + ${paidCount} paid = ${visible} visible`);
         }
-        lines.push("", `Free-only: ${freeOnly.current ? "ON" : "OFF"}`);
-        output.parts = [{ type: "text", text: lines.join(`
-`) }];
+        lines.push("", `Free-only: ${isFreeOnly() ? "ON" : "OFF"}`);
+        output.parts = [textPart(lines.join(`
+`))];
+        return;
+      }
+      if (cmd.startsWith("free-hide ")) {
+        const target = cmd.slice("free-hide ".length).trim();
+        if (!target) {
+          output.parts = [textPart("Usage: `/free-hide <model-id>`")];
+          return;
+        }
+        const cfg = loadConfig();
+        const hidden = new Set(cfg.hidden_models ?? []);
+        hidden.add(target);
+        saveConfig({ hidden_models: [...hidden] });
+        output.parts = [textPart(`Hidden \`${target}\`. Use \`/free-hidden\` to list hidden models.`)];
+        return;
+      }
+      if (cmd.startsWith("free-unhide ")) {
+        const target = cmd.slice("free-unhide ".length).trim();
+        if (!target) {
+          output.parts = [textPart("Usage: `/free-unhide <model-id>`")];
+          return;
+        }
+        const cfg = loadConfig();
+        const hidden = new Set(cfg.hidden_models ?? []);
+        if (!hidden.has(target)) {
+          output.parts = [textPart(`\`${target}\` is not hidden.`)];
+          return;
+        }
+        hidden.delete(target);
+        saveConfig({ hidden_models: [...hidden] });
+        output.parts = [textPart(`Unhid \`${target}\`.`)];
+        return;
+      }
+      if (cmd === "free-hidden") {
+        const cfg = loadConfig();
+        const hidden = cfg.hidden_models ?? [];
+        if (hidden.length === 0) {
+          output.parts = [textPart("No hidden models.")];
+          return;
+        }
+        output.parts = [textPart(`Hidden models:
+${hidden.map((m) => `  - \`${m}\``).join(`
+`)}`)];
         return;
       }
       const toggleMatch = cmd.match(/^toggle-(.+)$/);
@@ -245,24 +339,17 @@ var ocFree = async () => {
           const current = getShowPaid(providerId);
           const next = !current;
           saveConfig({ [`${providerId}_show_paid`]: next });
-          output.parts = [{
-            type: "text",
-            text: `${providerId}: ${next ? "showing all models (including paid)" : `showing ${prov.free.length} free models}`}`
-          }];
+          output.parts = [
+            textPart(`${providerId}: ${next ? "showing all models (including paid)" : `showing ${prov.free.length} free models`}`)
+          ];
           return;
         }
       }
-    },
-    event: async (input) => {
-      const ev = input.event;
-      if (ev.type === "session.created") {
-        const models = ev;
-      }
-      if (ev.type === "session.status" && ev.status === "error") {}
     }
   };
 };
 var src_default = ocFree;
 export {
+  ocFree,
   src_default as default
 };
