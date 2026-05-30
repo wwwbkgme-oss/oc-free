@@ -95,6 +95,7 @@ var FREE_PROVIDERS = [
     note: "Set OPENROUTER_API_KEY env var",
     envKey: "OPENROUTER_API_KEY",
     docs: "https://openrouter.ai/keys",
+    healthUrl: "https://openrouter.ai/api/v1/models",
     configEntry: configureOpenrouter
   },
   {
@@ -110,6 +111,7 @@ var FREE_PROVIDERS = [
     all: [],
     note: "Free OAuth, no credit card",
     docs: "https://kilo.chat",
+    healthUrl: "https://api.kilo.ai/api/gateway",
     configEntry: configureKilo
   },
   {
@@ -119,6 +121,7 @@ var FREE_PROVIDERS = [
     note: "100 req/hr free tier",
     envKey: "LLM7_API_KEY",
     docs: "https://token.llm7.io",
+    healthUrl: "https://api.llm7.io/v1",
     configEntry: configureLlm7
   },
   {
@@ -127,6 +130,7 @@ var FREE_PROVIDERS = [
     all: [],
     note: "Free account, no credit card",
     docs: "https://cline.bot",
+    healthUrl: "https://api.cline.bot/api/v1",
     configEntry: configureCline
   },
   {
@@ -135,6 +139,7 @@ var FREE_PROVIDERS = [
     all: [],
     note: "1000 free req/day via OAuth",
     docs: "https://chat.qwen.ai",
+    healthUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     configEntry: configureQwen
   }
 ];
@@ -171,6 +176,75 @@ function visibleModels(pv) {
 function textPart(text) {
   return { type: "text", text };
 }
+async function checkProvider(pv) {
+  if (pv.id === "opencode") {
+    return { id: pv.id, status: "ok", ms: 0, detail: "Built-in, always available" };
+  }
+  if (pv.envKey && !process.env[pv.envKey]) {
+    return {
+      id: pv.id,
+      status: "no_key",
+      ms: 0,
+      detail: `Missing \`${pv.envKey}\` env var — set it or configure via opencode.json`
+    };
+  }
+  if (!pv.healthUrl) {
+    return { id: pv.id, status: "ok", ms: 0, detail: "Configured (no endpoint to probe)" };
+  }
+  const start = performance.now();
+  try {
+    const headers = { "User-Agent": "oc-free/1.0" };
+    if (pv.envKey && process.env[pv.envKey]) {
+      if (pv.id === "openrouter") {
+        headers["Authorization"] = `Bearer ${process.env[pv.envKey]}`;
+      }
+    }
+    const controller = new AbortController;
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(pv.healthUrl, {
+      method: "GET",
+      headers,
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+    const ms = Math.round(performance.now() - start);
+    if (res.ok || res.status === 401 || res.status === 403 || res.status === 429) {
+      return {
+        id: pv.id,
+        status: "ok",
+        ms,
+        detail: `HTTP ${res.status} in ${ms}ms — endpoint reachable`
+      };
+    }
+    return {
+      id: pv.id,
+      status: "error",
+      ms,
+      detail: `HTTP ${res.status} in ${ms}ms`
+    };
+  } catch (err) {
+    const ms = Math.round(performance.now() - start);
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      id: pv.id,
+      status: "unreachable",
+      ms,
+      detail: `${msg}`
+    };
+  }
+}
+function healthIcon(status) {
+  switch (status) {
+    case "ok":
+      return "✅";
+    case "no_key":
+      return "⚠️";
+    case "unreachable":
+      return "❌";
+    case "error":
+      return "❌";
+  }
+}
 var ocFree = async () => {
   return {
     name: "oc-free",
@@ -183,6 +257,10 @@ var ocFree = async () => {
       cmds["free-models"] = {
         template: "Call the free_models tool to discover free AI models",
         description: "List all available free models across providers"
+      };
+      cmds["free"] = {
+        template: "Test all free providers — checks API keys, endpoint connectivity, and reports live status",
+        description: "Health check for all free AI providers: tests keys, endpoints, and reports which are ready to use"
       };
       cmds["toggle-free"] = {
         template: "Toggle free-only mode for all providers",
@@ -240,7 +318,7 @@ var ocFree = async () => {
             lines.push("");
           }
           lines.push("---");
-          lines.push("Commands: `/toggle-free` | `/toggle-{provider}` | `/free-status` | `/free-hide <id>`");
+          lines.push("Commands: `/free` (health check)  |  `/toggle-free`  |  `/free-status`");
           lines.push(`Free-only mode: ${isFreeOnly() ? "ON" : "OFF"}`);
           return { output: lines.join(`
 `) };
@@ -249,6 +327,42 @@ var ocFree = async () => {
     },
     "command.execute.before": async (input, output) => {
       const cmd = input.command;
+      if (cmd === "free") {
+        const lines = [
+          "\uD83D\uDD0D **oc-free Health Check**",
+          "Probing every provider… (4 s timeout each)",
+          ""
+        ];
+        const results = await Promise.all(FREE_PROVIDERS.map((pv) => checkProvider(pv)));
+        let ready = 0;
+        let total = 0;
+        for (const r of results) {
+          total++;
+          if (r.status === "ok")
+            ready++;
+          const models = visibleModels(FREE_PROVIDERS.find((p) => p.id === r.id));
+          const msLabel = r.ms > 0 ? ` ${r.ms}ms` : "";
+          lines.push(`${healthIcon(r.status)} **${r.id}** — ${r.detail}${msLabel}`);
+          lines.push(`   Models: ${models.length} configured`);
+          if (r.status === "no_key") {
+            lines.push(`   → Set \`${FREE_PROVIDERS.find((p) => p.id === r.id)?.envKey}\` or run \`/toggle-${r.id}\``);
+          }
+        }
+        lines.push("");
+        lines.push(`**${ready}/${total} providers ready**`);
+        if (ready === total) {
+          lines.push("\uD83C\uDF89 All free providers are configured and reachable!");
+        } else if (ready > 0) {
+          lines.push("Some providers need attention — check the ⚠️ / ❌ entries above.");
+        } else {
+          lines.push("No providers are reachable. Check your network or API keys.");
+        }
+        lines.push("");
+        lines.push("Run `/free-models` to see available models, `/free-status` for counts.");
+        output.parts = [textPart(lines.join(`
+`))];
+        return;
+      }
       if (cmd === "free-models") {
         const lines = ["# Free Providers Overview", ""];
         for (const pv of FREE_PROVIDERS) {
@@ -264,7 +378,7 @@ var ocFree = async () => {
           lines.push(`- Toggle: \`/toggle-${pv.id}\``, "");
         }
         lines.push(`**Free-only mode: ${isFreeOnly() ? "ON" : "OFF"}**`);
-        lines.push("Use `/toggle-free` to switch, `/free-status` for counts");
+        lines.push("Run `/free` for a live health check, `/free-status` for counts");
         output.parts = [textPart(lines.join(`
 `))];
         return;
@@ -285,6 +399,7 @@ var ocFree = async () => {
           lines.push(`- **${pv.id}**: ${freeCount} free + ${paidCount} paid = ${visible} visible`);
         }
         lines.push("", `Free-only: ${isFreeOnly() ? "ON" : "OFF"}`);
+        lines.push("", "Run `/free` for a live connectivity health check");
         output.parts = [textPart(lines.join(`
 `))];
         return;

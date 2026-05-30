@@ -24,6 +24,7 @@ your OpenCode CLI/TUI.
 
 - Auto-configures each provider's `baseUrl` and `models` so they work out of
   the box.
+- **`/free`** — **Live health check**: tests API keys, probes endpoints, shows which providers are actually ready to use (with response times).
 - `/free-models` — list all discovered models grouped by provider.
 - `/free-status` — quick counts of free vs paid models.
 - `/toggle-free` — switch between free-only and all-models view.
@@ -76,15 +77,16 @@ Restart OpenCode.
 
 ### Commands
 
-| Command                  | Description                                |
-| ------------------------ | ------------------------------------------ |
-| `/free-models`           | List all free models across every provider |
-| `/free-status`           | Show provider-wise free/paid model counts  |
-| `/toggle-free`           | Toggle global free-only mode on/off        |
-| `/toggle-{provider}`     | Toggle paid models for a specific provider |
-| `/free-hide <model-id>`  | Hide a model from output                   |
-| `/free-unhide <model-id>`| Restore a hidden model                     |
-| `/free-hidden`           | List hidden model IDs                      |
+| Command                   | Description                                      |
+| ------------------------- | ------------------------------------------------ |
+| `/free`                   | **Live health check** — tests keys + endpoints   |
+| `/free-models`            | List all free models across every provider        |
+| `/free-status`            | Show provider-wise free/paid model counts         |
+| `/toggle-free`            | Toggle global free-only mode on/off               |
+| `/toggle-{provider}`      | Toggle paid models for a specific provider        |
+| `/free-hide <model-id>`   | Hide a model from output                          |
+| `/free-unhide <model-id>` | Restore a hidden model                            |
+| `/free-hidden`            | List hidden model IDs                             |
 
 ### Tool
 

@@ -24,6 +24,13 @@ interface OcFreeConfig {
   hidden_models?: string[];
 }
 
+interface HealthResult {
+  id: string;
+  status: 'ok' | 'no_key' | 'unreachable' | 'error';
+  ms: number;
+  detail: string;
+}
+
 interface ProviderEntry {
   id: string;
   free: string[];
@@ -31,13 +38,14 @@ interface ProviderEntry {
   note: string;
   docs?: string;
   envKey?: string;
+  /** Base URL used for connectivity health checks */
+  healthUrl?: string;
   /** Auto-register the provider config so models actually work */
   configEntry?: (providers: Record<string, unknown>) => void;
 }
 
 // ---------------------------------------------------------------------------
-// Provider config builders — these create the `provider.{name}` block in
-// opencode.json so the models are not just visible but actually callable.
+// Provider config builders
 // ---------------------------------------------------------------------------
 function configureKilo(providers: Record<string, unknown>) {
   if (providers.kilo) return;
@@ -131,6 +139,7 @@ const FREE_PROVIDERS: ProviderEntry[] = [
     note: 'Set OPENROUTER_API_KEY env var',
     envKey: 'OPENROUTER_API_KEY',
     docs: 'https://openrouter.ai/keys',
+    healthUrl: 'https://openrouter.ai/api/v1/models',
     configEntry: configureOpenrouter,
   },
   {
@@ -146,6 +155,7 @@ const FREE_PROVIDERS: ProviderEntry[] = [
     all: [],
     note: 'Free OAuth, no credit card',
     docs: 'https://kilo.chat',
+    healthUrl: 'https://api.kilo.ai/api/gateway',
     configEntry: configureKilo,
   },
   {
@@ -155,6 +165,7 @@ const FREE_PROVIDERS: ProviderEntry[] = [
     note: '100 req/hr free tier',
     envKey: 'LLM7_API_KEY',
     docs: 'https://token.llm7.io',
+    healthUrl: 'https://api.llm7.io/v1',
     configEntry: configureLlm7,
   },
   {
@@ -163,6 +174,7 @@ const FREE_PROVIDERS: ProviderEntry[] = [
     all: [],
     note: 'Free account, no credit card',
     docs: 'https://cline.bot',
+    healthUrl: 'https://api.cline.bot/api/v1',
     configEntry: configureCline,
   },
   {
@@ -171,13 +183,13 @@ const FREE_PROVIDERS: ProviderEntry[] = [
     all: [],
     note: '1000 free req/day via OAuth',
     docs: 'https://chat.qwen.ai',
+    healthUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     configEntry: configureQwen,
   },
 ];
 
 // ---------------------------------------------------------------------------
-// Config persistence — always reads from disk so multiple OpenCode sessions
-// agree on the current state.
+// Config persistence
 // ---------------------------------------------------------------------------
 function loadConfig(): OcFreeConfig {
   try {
@@ -198,7 +210,7 @@ function saveConfig(updates: Partial<OcFreeConfig>): void {
       'utf8',
     );
   } catch {
-    // Best-effort disk write — never crash OpenCode for a config save.
+    // Best-effort
   }
 }
 
@@ -225,6 +237,88 @@ function textPart(text: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Health check — test every provider's API endpoint in parallel
+// ---------------------------------------------------------------------------
+async function checkProvider(pv: ProviderEntry): Promise<HealthResult> {
+  // 1) OpenCode is always available (built-in provider)
+  if (pv.id === 'opencode') {
+    return { id: pv.id, status: 'ok', ms: 0, detail: 'Built-in, always available' };
+  }
+
+  // 2) Check env key presence
+  if (pv.envKey && !process.env[pv.envKey]) {
+    return {
+      id: pv.id,
+      status: 'no_key',
+      ms: 0,
+      detail: `Missing \`${pv.envKey}\` env var — set it or configure via opencode.json`,
+    };
+  }
+
+  // 3) Probe API endpoint with a lightweight GET (3 second timeout)
+  if (!pv.healthUrl) {
+    return { id: pv.id, status: 'ok', ms: 0, detail: 'Configured (no endpoint to probe)' };
+  }
+
+  const start = performance.now();
+  try {
+    // Build headers — include API key if available (some providers need it)
+    const headers: Record<string, string> = { 'User-Agent': 'oc-free/1.0' };
+    if (pv.envKey && process.env[pv.envKey]) {
+      if (pv.id === 'openrouter') {
+        headers['Authorization'] = `Bearer ${process.env[pv.envKey]!}`;
+      }
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+
+    const res = await fetch(pv.healthUrl, {
+      method: 'GET',
+      headers,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    const ms = Math.round(performance.now() - start);
+
+    // Any response (including 4xx) means the endpoint is reachable
+    if (res.ok || res.status === 401 || res.status === 403 || res.status === 429) {
+      return {
+        id: pv.id,
+        status: 'ok',
+        ms,
+        detail: `HTTP ${res.status} in ${ms}ms — endpoint reachable`,
+      };
+    }
+    return {
+      id: pv.id,
+      status: 'error',
+      ms,
+      detail: `HTTP ${res.status} in ${ms}ms`,
+    };
+  } catch (err: unknown) {
+    const ms = Math.round(performance.now() - start);
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      id: pv.id,
+      status: 'unreachable',
+      ms,
+      detail: `${msg}`,
+    };
+  }
+}
+
+function healthIcon(status: HealthResult['status']): string {
+  switch (status) {
+    case 'ok': return '✅';
+    case 'no_key': return '⚠️';
+    case 'unreachable': return '❌';
+    case 'error': return '❌';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Plugin entry point
 // ---------------------------------------------------------------------------
 const ocFree = async () => {
@@ -232,10 +326,7 @@ const ocFree = async () => {
     name: 'oc-free',
 
     // ── config hook ──────────────────────────────────────────────────────
-    // Fires once at startup. We inject our free providers (unless the user
-    // already configured them) and register convenience slash-commands.
     config: async (opencodeConfig: Record<string, unknown>) => {
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       const providers = (opencodeConfig.provider ??= {}) as Record<string, unknown>;
 
       for (const pv of FREE_PROVIDERS) {
@@ -248,25 +339,28 @@ const ocFree = async () => {
         template: 'Call the free_models tool to discover free AI models',
         description: 'List all available free models across providers',
       };
+      cmds['free'] = {
+        template: 'Test all free providers — checks API keys, endpoint connectivity, and reports live status',
+        description: 'Health check for all free AI providers: tests keys, endpoints, and reports which are ready to use',
+      };
       cmds['toggle-free'] = {
         template: 'Toggle free-only mode for all providers',
         description: 'Switch between free-only and all models view',
       };
-
       for (const pv of FREE_PROVIDERS) {
         cmds[`toggle-${pv.id}`] = {
           template: `Toggle free/paid models for ${pv.id}`,
           description: `Switch between free-only and all models for ${pv.id}`,
         };
       }
-
       cmds['free-status'] = {
         template: 'Show free model counts for all providers',
         description: 'Show how many free/paid models each provider has',
       };
       cmds['free-hide'] = {
         template: '<model-id> — Hide a model from listings',
-        description: 'Hide a specific model ID so it no longer appears in free-models output',
+        description:
+          'Hide a specific model ID so it no longer appears in free-models output',
       };
       cmds['free-unhide'] = {
         template: '<model-id> — Unhide a previously hidden model',
@@ -279,7 +373,6 @@ const ocFree = async () => {
     },
 
     // ── Custom tool ──────────────────────────────────────────────────────
-    // The AI can call `free_models` to discover available providers/models.
     tool: {
       free_models: tool({
         description:
@@ -305,7 +398,6 @@ const ocFree = async () => {
             if (pv.envKey) {
               lines.push(`Auth: \`${pv.envKey}\` ${hasKey ? '✅ set' : '❌ not set'}`);
             }
-
             lines.push(`Models (${visible.length} visible):`);
             for (const m of visible) lines.push(`  - \`${m}\``);
             if (pv.all.length > 0 && isFreeOnly()) {
@@ -315,7 +407,7 @@ const ocFree = async () => {
           }
 
           lines.push('---');
-          lines.push('Commands: `/toggle-free` | `/toggle-{provider}` | `/free-status` | `/free-hide <id>`');
+          lines.push('Commands: `/free` (health check)  |  `/toggle-free`  |  `/free-status`');
           lines.push(`Free-only mode: ${isFreeOnly() ? 'ON' : 'OFF'}`);
 
           return { output: lines.join('\n') };
@@ -324,15 +416,64 @@ const ocFree = async () => {
     },
 
     // ── command.execute.before ────────────────────────────────────────────
-    // Intercept slash-commands and render them as text output instead of
-    // trying to execute them as shell commands.
     'command.execute.before': async (
       input: { command: string; sessionID: string; arguments: string },
       output: { parts: Array<{ type: string; text: string }> },
     ) => {
       const cmd = input.command;
 
-      // /free-models  —  list all free models grouped by provider
+      // ═══════════════════════════════════════════════════════════════════
+      // /free   —  Health check: test all providers in real time
+      // ═══════════════════════════════════════════════════════════════════
+      if (cmd === 'free') {
+        const lines = [
+          '🔍 **oc-free Health Check**',
+          'Probing every provider… (4 s timeout each)',
+          '',
+        ];
+
+        // Run checks in parallel
+        const results = await Promise.all(
+          FREE_PROVIDERS.map(pv => checkProvider(pv)),
+        );
+
+        let ready = 0;
+        let total = 0;
+        for (const r of results) {
+          total++;
+          if (r.status === 'ok') ready++;
+
+          const models = visibleModels(FREE_PROVIDERS.find(p => p.id === r.id)!);
+          const msLabel = r.ms > 0 ? ` ${r.ms}ms` : '';
+
+          lines.push(
+            `${healthIcon(r.status)} **${r.id}** — ${r.detail}${msLabel}`,
+          );
+          lines.push(`   Models: ${models.length} configured`);
+          if (r.status === 'no_key') {
+            lines.push(`   → Set \`${FREE_PROVIDERS.find(p => p.id === r.id)?.envKey}\` or run \`/toggle-${r.id}\``);
+          }
+        }
+
+        lines.push('');
+        lines.push(`**${ready}/${total} providers ready**`);
+        if (ready === total) {
+          lines.push('🎉 All free providers are configured and reachable!');
+        } else if (ready > 0) {
+          lines.push('Some providers need attention — check the ⚠️ / ❌ entries above.');
+        } else {
+          lines.push('No providers are reachable. Check your network or API keys.');
+        }
+        lines.push('');
+        lines.push('Run `/free-models` to see available models, `/free-status` for counts.');
+
+        output.parts = [textPart(lines.join('\n'))];
+        return;
+      }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // /free-models  —  list all free models
+      // ═══════════════════════════════════════════════════════════════════
       if (cmd === 'free-models') {
         const lines = ['# Free Providers Overview', ''];
         for (const pv of FREE_PROVIDERS) {
@@ -346,12 +487,14 @@ const ocFree = async () => {
           lines.push(`- Toggle: \`/toggle-${pv.id}\``, '');
         }
         lines.push(`**Free-only mode: ${isFreeOnly() ? 'ON' : 'OFF'}**`);
-        lines.push('Use `/toggle-free` to switch, `/free-status` for counts');
+        lines.push('Run `/free` for a live health check, `/free-status` for counts');
         output.parts = [textPart(lines.join('\n'))];
         return;
       }
 
-      // /toggle-free  —  flip global free-only flag
+      // ═══════════════════════════════════════════════════════════════════
+      // /toggle-free
+      // ═══════════════════════════════════════════════════════════════════
       if (cmd === 'toggle-free') {
         const next = !isFreeOnly();
         saveConfig({ free_only: next });
@@ -359,7 +502,9 @@ const ocFree = async () => {
         return;
       }
 
-      // /free-status  —  short provider-wise model counts
+      // ═══════════════════════════════════════════════════════════════════
+      // /free-status
+      // ═══════════════════════════════════════════════════════════════════
       if (cmd === 'free-status') {
         const lines = ['## Free Provider Status', ''];
         for (const pv of FREE_PROVIDERS) {
@@ -370,11 +515,14 @@ const ocFree = async () => {
           lines.push(`- **${pv.id}**: ${freeCount} free + ${paidCount} paid = ${visible} visible`);
         }
         lines.push('', `Free-only: ${isFreeOnly() ? 'ON' : 'OFF'}`);
+        lines.push('', 'Run `/free` for a live connectivity health check');
         output.parts = [textPart(lines.join('\n'))];
         return;
       }
 
-      // /free-hide <model-id>
+      // ═══════════════════════════════════════════════════════════════════
+      // /free-hide
+      // ═══════════════════════════════════════════════════════════════════
       if (cmd.startsWith('free-hide ')) {
         const target = cmd.slice('free-hide '.length).trim();
         if (!target) {
@@ -389,7 +537,9 @@ const ocFree = async () => {
         return;
       }
 
-      // /free-unhide <model-id>
+      // ═══════════════════════════════════════════════════════════════════
+      // /free-unhide
+      // ═══════════════════════════════════════════════════════════════════
       if (cmd.startsWith('free-unhide ')) {
         const target = cmd.slice('free-unhide '.length).trim();
         if (!target) {
@@ -408,7 +558,9 @@ const ocFree = async () => {
         return;
       }
 
-      // /free-hidden  —  list hidden models
+      // ═══════════════════════════════════════════════════════════════════
+      // /free-hidden
+      // ═══════════════════════════════════════════════════════════════════
       if (cmd === 'free-hidden') {
         const cfg = loadConfig();
         const hidden = cfg.hidden_models ?? [];
@@ -420,7 +572,9 @@ const ocFree = async () => {
         return;
       }
 
-      // /toggle-<provider>  —  toggle paid model visibility per provider
+      // ═══════════════════════════════════════════════════════════════════
+      // /toggle-<provider>
+      // ═══════════════════════════════════════════════════════════════════
       const toggleMatch = cmd.match(/^toggle-(.+)$/);
       if (toggleMatch) {
         const providerId = toggleMatch[1];
