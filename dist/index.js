@@ -1,12 +1,49 @@
 // src/index.ts
 import { tool } from "@opencode-ai/plugin";
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 var z = tool.schema;
 var HOME = process.env.HOME || process.env.USERPROFILE || "";
 var OC_FREE_DIR = join(HOME, ".config", "oc-free");
 var CONFIG_PATH = join(OC_FREE_DIR, "config.json");
-function configureKilo(providers) {
+var SECRETS_PATH = join(OC_FREE_DIR, "secrets.json");
+function loadSecrets() {
+  try {
+    if (!existsSync(SECRETS_PATH))
+      return {};
+    return JSON.parse(readFileSync(SECRETS_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+}
+function saveSecret(providerId, apiKey) {
+  try {
+    mkdirSync(OC_FREE_DIR, { recursive: true });
+    const existing = loadSecrets();
+    existing[providerId] = { apiKey, configuredAt: new Date().toISOString() };
+    writeFileSync(SECRETS_PATH, JSON.stringify(existing, null, 2), "utf8");
+    try {
+      chmodSync(SECRETS_PATH, 384);
+    } catch {}
+    const envLines = Object.entries(existing).filter(([, v]) => v.apiKey).map(([id, v]) => {
+      const pv = FREE_PROVIDERS.find((p) => p.id === id);
+      return pv?.envKey ? `${pv.envKey}="${v.apiKey}"` : `# ${id}: key saved to secrets.json`;
+    });
+    const envPath = join(OC_FREE_DIR, ".env");
+    writeFileSync(envPath, `# oc-free managed secrets — source this or let the plugin handle it
+${envLines.join(`
+`)}
+`, "utf8");
+  } catch {}
+}
+function hasSecret(providerId) {
+  const s = loadSecrets();
+  return !!s[providerId]?.apiKey;
+}
+function getSecret(providerId) {
+  return loadSecrets()[providerId]?.apiKey;
+}
+function configureKilo(providers, _secrets) {
   if (providers.kilo)
     return;
   const models = FREE_PROVIDERS.find((x) => x.id === "kilo").free.map((m) => [
@@ -18,18 +55,20 @@ function configureKilo(providers) {
     models: Object.fromEntries(models)
   };
 }
-function configureLlm7(providers) {
+function configureLlm7(providers, secrets) {
   if (providers.llm7)
     return;
-  providers.llm7 = {
+  const cfg = {
     baseUrl: "https://api.llm7.io/v1",
-    models: {
-      default: { name: "LLM7 Default" },
-      fast: { name: "LLM7 Fast" }
-    }
+    models: { default: { name: "LLM7 Default" }, fast: { name: "LLM7 Fast" } }
   };
+  const saved = secrets?.llm7?.apiKey;
+  if (saved) {
+    cfg.options = { apiKey: saved };
+  }
+  providers.llm7 = cfg;
 }
-function configureCline(providers) {
+function configureCline(providers, _secrets) {
   if (providers.cline)
     return;
   providers.cline = {
@@ -40,7 +79,7 @@ function configureCline(providers) {
     }
   };
 }
-function configureQwen(providers) {
+function configureQwen(providers, _secrets) {
   if (providers.qwen)
     return;
   providers.qwen = {
@@ -52,17 +91,22 @@ function configureQwen(providers) {
     }
   };
 }
-function configureOpenrouter(providers) {
+function configureOpenrouter(providers, secrets) {
   if (providers.openrouter)
     return;
   const models = FREE_PROVIDERS.find((x) => x.id === "openrouter").free.map((m) => {
     const key = m.replace(/^openrouter\//, "");
     return [key, { name: key }];
   });
-  providers.openrouter = {
+  const cfg = {
     baseUrl: "https://openrouter.ai/api/v1",
     models: Object.fromEntries(models)
   };
+  const saved = secrets?.openrouter?.apiKey;
+  if (saved) {
+    cfg.options = { apiKey: saved };
+  }
+  providers.openrouter = cfg;
 }
 var FREE_PROVIDERS = [
   {
@@ -80,7 +124,9 @@ var FREE_PROVIDERS = [
     ],
     all: [],
     note: "No setup required",
-    docs: "https://opencode.ai/docs/zen"
+    docs: "https://opencode.ai/docs/zen",
+    setup: "builtin",
+    setupLabel: "Built-in — no key needed"
   },
   {
     id: "openrouter",
@@ -95,6 +141,13 @@ var FREE_PROVIDERS = [
     note: "Set OPENROUTER_API_KEY env var",
     envKey: "OPENROUTER_API_KEY",
     docs: "https://openrouter.ai/keys",
+    setup: "api_key",
+    setupLabel: "API key required",
+    setupUrl: "https://openrouter.ai/keys",
+    setupDetail: `1. Go to https://openrouter.ai/keys
+2. Sign up / log in
+3. Create a free API key
+4. Run: \`/free-setup apply openrouter <your-key>\``,
     healthUrl: "https://openrouter.ai/api/v1/models",
     configEntry: configureOpenrouter
   },
@@ -111,6 +164,12 @@ var FREE_PROVIDERS = [
     all: [],
     note: "Free OAuth, no credit card",
     docs: "https://kilo.chat",
+    setup: "oauth",
+    setupLabel: "OAuth (free) — no key needed",
+    setupUrl: "https://kilo.chat",
+    setupDetail: `1. Go to https://kilo.chat
+2. Sign up for a free account (OAuth via GitHub/Google)
+3. OpenCode will use OAuth automatically — no API key required`,
     healthUrl: "https://api.kilo.ai/api/gateway",
     configEntry: configureKilo
   },
@@ -121,6 +180,13 @@ var FREE_PROVIDERS = [
     note: "100 req/hr free tier",
     envKey: "LLM7_API_KEY",
     docs: "https://token.llm7.io",
+    setup: "api_key",
+    setupLabel: "API key required",
+    setupUrl: "https://token.llm7.io",
+    setupDetail: `1. Go to https://token.llm7.io
+2. Sign up for an account
+3. Generate an API token
+4. Run: \`/free-setup apply llm7 <your-token>\``,
     healthUrl: "https://api.llm7.io/v1",
     configEntry: configureLlm7
   },
@@ -130,6 +196,12 @@ var FREE_PROVIDERS = [
     all: [],
     note: "Free account, no credit card",
     docs: "https://cline.bot",
+    setup: "oauth",
+    setupLabel: "Free account — no key needed",
+    setupUrl: "https://cline.bot",
+    setupDetail: `1. Go to https://cline.bot
+2. Create a free account
+3. OpenCode will handle auth automatically — no manual API key required`,
     healthUrl: "https://api.cline.bot/api/v1",
     configEntry: configureCline
   },
@@ -139,6 +211,12 @@ var FREE_PROVIDERS = [
     all: [],
     note: "1000 free req/day via OAuth",
     docs: "https://chat.qwen.ai",
+    setup: "oauth",
+    setupLabel: "OAuth (1000 req/day) — no key needed",
+    setupUrl: "https://chat.qwen.ai",
+    setupDetail: `1. Go to https://chat.qwen.ai
+2. Sign up for a free Alibaba Cloud / Qwen account
+3. OAuth is handled automatically — no manual API key required`,
     healthUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     configEntry: configureQwen
   }
@@ -176,16 +254,41 @@ function visibleModels(pv) {
 function textPart(text) {
   return { type: "text", text };
 }
+function setupIcon(setup) {
+  switch (setup) {
+    case "builtin":
+      return "\uD83D\uDD35";
+    case "oauth":
+      return "\uD83D\uDFE2";
+    case "api_key":
+      return "\uD83D\uDFE1";
+    case "env_key":
+      return "\uD83D\uDFE1";
+    case "none":
+      return "⚪";
+  }
+}
+function keyStatus(pv) {
+  if (hasSecret(pv.id))
+    return { icon: "✅", label: "Key saved via /free-setup" };
+  if (pv.envKey && process.env[pv.envKey])
+    return { icon: "✅", label: `\`${pv.envKey}\` is set` };
+  if (pv.envKey)
+    return { icon: "❌", label: `\`${pv.envKey}\` not set` };
+  return { icon: "✅", label: "No key needed" };
+}
 async function checkProvider(pv) {
   if (pv.id === "opencode") {
     return { id: pv.id, status: "ok", ms: 0, detail: "Built-in, always available" };
   }
-  if (pv.envKey && !process.env[pv.envKey]) {
+  const hasEnvKey = pv.envKey ? !!process.env[pv.envKey] : false;
+  const hasSavedKey = hasSecret(pv.id);
+  if (pv.envKey && !hasEnvKey && !hasSavedKey) {
     return {
       id: pv.id,
       status: "no_key",
       ms: 0,
-      detail: `Missing \`${pv.envKey}\` env var — set it or configure via opencode.json`
+      detail: `No API key found — run \`/free-setup ${pv.id}\` for instructions`
     };
   }
   if (!pv.healthUrl) {
@@ -194,10 +297,9 @@ async function checkProvider(pv) {
   const start = performance.now();
   try {
     const headers = { "User-Agent": "oc-free/1.0" };
-    if (pv.envKey && process.env[pv.envKey]) {
-      if (pv.id === "openrouter") {
-        headers["Authorization"] = `Bearer ${process.env[pv.envKey]}`;
-      }
+    const key = getSecret(pv.id) || (pv.envKey ? process.env[pv.envKey] : undefined);
+    if (key && pv.id === "openrouter") {
+      headers["Authorization"] = `Bearer ${key}`;
     }
     const controller = new AbortController;
     const timer = setTimeout(() => controller.abort(), 4000);
@@ -249,9 +351,10 @@ var ocFree = async () => {
   return {
     name: "oc-free",
     config: async (opencodeConfig) => {
+      const secrets = loadSecrets();
       const providers = opencodeConfig.provider ??= {};
       for (const pv of FREE_PROVIDERS) {
-        pv.configEntry?.(providers);
+        pv.configEntry?.(providers, secrets);
       }
       const cmds = opencodeConfig.command ??= {};
       cmds["free-models"] = {
@@ -261,6 +364,10 @@ var ocFree = async () => {
       cmds["free-probe"] = {
         template: "Test all free providers — checks API keys, endpoint connectivity, and reports live status",
         description: "Health check for all free AI providers: tests keys, endpoints, and reports which are ready to use"
+      };
+      cmds["free-setup"] = {
+        template: "Interactive onboarding wizard — shows where to get keys and lets you save them",
+        description: "Set up free AI providers: shows key URLs, instructions, and saves API keys via `/free-setup apply <provider> <key>`"
       };
       cmds["toggle-free"] = {
         template: "Toggle free-only mode for all providers",
@@ -318,7 +425,7 @@ var ocFree = async () => {
             lines.push("");
           }
           lines.push("---");
-          lines.push("Commands: `/free-probe` (health check)  |  `/toggle-free`  |  `/free-status`");
+          lines.push("Commands: `/free-probe` (health check)  |  `/free-setup` (onboarding)  |  `/toggle-free`");
           lines.push(`Free-only mode: ${isFreeOnly() ? "ON" : "OFF"}`);
           return { output: lines.join(`
 `) };
@@ -327,6 +434,112 @@ var ocFree = async () => {
     },
     "command.execute.before": async (input, output) => {
       const cmd = input.command;
+      if (cmd === "free-setup" || cmd.startsWith("free-setup ")) {
+        const args = cmd.slice("free-setup".length).trim();
+        const parts = args.split(/\s+/);
+        const sub = parts[0]?.toLowerCase();
+        if (sub === "apply" && parts.length >= 3) {
+          const providerId = parts[1].toLowerCase();
+          const apiKey = parts.slice(2).join(" ");
+          const pv = FREE_PROVIDERS.find((p) => p.id === providerId);
+          if (!pv) {
+            output.parts = [textPart(`❌ Unknown provider \`${providerId}\`. Try: openrouter, kilo, llm7, cline, qwen`)];
+            return;
+          }
+          if (pv.setup !== "api_key") {
+            output.parts = [textPart(`⚠️ \`${providerId}\` doesn't need an API key (${pv.setupLabel}). Skipping.`)];
+            return;
+          }
+          saveSecret(providerId, apiKey);
+          const envPath = join(OC_FREE_DIR, ".env");
+          output.parts = [textPart(`✅ **${providerId}** key saved to \`${SECRETS_PATH}\`
+
+` + `Next steps:
+` + `1. Restart OpenCode so the key is picked up
+` + `2. Run \`/free-probe\` to verify connectivity
+` + `3. Run \`/free-models\` to see available models
+
+` + `\uD83D\uDCC1 A reference \`.env\` file was also written to \`${envPath}\`
+` + `   You can \`source ${envPath}\` in your shell if needed.`)];
+          return;
+        }
+        if (sub && sub !== "apply") {
+          const pv = FREE_PROVIDERS.find((p) => p.id === sub);
+          if (!pv) {
+            output.parts = [textPart(`❌ Unknown provider \`${sub}\`. Try: ${FREE_PROVIDERS.map((p) => p.id).join(", ")}`)];
+            return;
+          }
+          const lines2 = [
+            `## ${setupIcon(pv.setup)} ${pv.id} — Setup Guide`,
+            "",
+            `${pv.note}`,
+            `Docs: ${pv.docs}`,
+            "",
+            `**Setup type:** ${pv.setupLabel}`
+          ];
+          const ks = keyStatus(pv);
+          lines2.push(`**Status:** ${ks.icon} ${ks.label}`);
+          if (pv.setupUrl)
+            lines2.push(`**Get started:** ${pv.setupUrl}`);
+          if (pv.envKey)
+            lines2.push(`**Env variable:** \`${pv.envKey}\``);
+          if (pv.setupDetail) {
+            lines2.push("", "**Instructions:**");
+            for (const line of pv.setupDetail.split(`
+`)) {
+              lines2.push(line);
+            }
+          }
+          if (pv.setup === "api_key") {
+            if (hasSecret(pv.id)) {
+              lines2.push("", "✅ You already saved a key via `/free-setup apply`. Restart OpenCode to activate.");
+            } else {
+              lines2.push("", "**To save your API key:**");
+              lines2.push(`  \`/free-setup apply ${pv.id} <your-key>\``);
+            }
+          }
+          lines2.push("", `Models: ${pv.free.length} free + ${pv.all.length} paid`);
+          for (const m of visibleModels(pv))
+            lines2.push(`  - \`${m}\``);
+          output.parts = [textPart(lines2.join(`
+`))];
+          return;
+        }
+        const lines = [
+          "\uD83E\uDDED **oc-free Onboarding Wizard**",
+          "Set up your free AI providers in minutes.",
+          "",
+          `Run \`/free-setup <provider>\` for detailed instructions.`,
+          `Run \`/free-setup apply <provider> <key>\` to save an API key.`,
+          "",
+          "---",
+          "",
+          "| Provider | Type | Status | Get Key",
+          "|---|---|---|---|"
+        ];
+        for (const pv of FREE_PROVIDERS) {
+          const ks = keyStatus(pv);
+          const url = pv.setupUrl ? `[link](${pv.setupUrl})` : "—";
+          lines.push(`| **${pv.id}** | ${setupIcon(pv.setup)} ${pv.setupLabel} | ${ks.icon} ${ks.label} | ${url} |`);
+        }
+        lines.push("", "---", "**Providers needing an API key:**");
+        for (const pv of FREE_PROVIDERS) {
+          if (pv.setup === "api_key") {
+            const saved = hasSecret(pv.id);
+            lines.push(`  ${saved ? "✅" : "\uD83D\uDFE1"} **${pv.id}** — ${pv.setupUrl}`, `     \`/free-setup apply ${pv.id} <key>\` ${saved ? "(key already saved — restart to activate)" : "(save your key)"}`);
+          }
+        }
+        lines.push("", "**Providers with OAuth / auto-setup (no key needed):**");
+        for (const pv of FREE_PROVIDERS) {
+          if (pv.setup === "oauth" || pv.setup === "builtin") {
+            lines.push(`  ✅ **${pv.id}** — ${pv.setupUrl || pv.docs}`);
+          }
+        }
+        lines.push("", "---", "Next: `/free-setup <provider>` for details → `/free-setup apply <provider> <key>` → restart → `/free-probe`");
+        output.parts = [textPart(lines.join(`
+`))];
+        return;
+      }
       if (cmd === "free-probe") {
         const lines = [
           "\uD83D\uDD0D **oc-free Health Check**",
@@ -345,7 +558,7 @@ var ocFree = async () => {
           lines.push(`${healthIcon(r.status)} **${r.id}** — ${r.detail}${msLabel}`);
           lines.push(`   Models: ${models.length} configured`);
           if (r.status === "no_key") {
-            lines.push(`   → Set \`${FREE_PROVIDERS.find((p) => p.id === r.id)?.envKey}\` or run \`/toggle-${r.id}\``);
+            lines.push(`   → Run \`/free-setup ${r.id}\` for setup instructions`);
           }
         }
         lines.push("");
@@ -358,7 +571,7 @@ var ocFree = async () => {
           lines.push("No providers are reachable. Check your network or API keys.");
         }
         lines.push("");
-        lines.push("Run `/free-models` to see available models, `/free-status` for counts.");
+        lines.push("Run `/free-setup` for the onboarding wizard or `/free-models` to see models.");
         output.parts = [textPart(lines.join(`
 `))];
         return;
@@ -378,7 +591,7 @@ var ocFree = async () => {
           lines.push(`- Toggle: \`/toggle-${pv.id}\``, "");
         }
         lines.push(`**Free-only mode: ${isFreeOnly() ? "ON" : "OFF"}**`);
-        lines.push("Run `/free-probe` for a live health check, `/free-status` for counts");
+        lines.push("Run `/free-probe` for a live health check, `/free-setup` for onboarding");
         output.parts = [textPart(lines.join(`
 `))];
         return;
@@ -399,7 +612,7 @@ var ocFree = async () => {
           lines.push(`- **${pv.id}**: ${freeCount} free + ${paidCount} paid = ${visible} visible`);
         }
         lines.push("", `Free-only: ${isFreeOnly() ? "ON" : "OFF"}`);
-        lines.push("", "Run `/free-probe` for a live connectivity health check");
+        lines.push("", "Run `/free-probe` for connectivity or `/free-setup` to configure");
         output.parts = [textPart(lines.join(`
 `))];
         return;
